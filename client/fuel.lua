@@ -3,6 +3,143 @@ local state = require 'client.state'
 local utils = require 'client.utils'
 local fuel = {}
 
+local nozzleModel = `prop_cs_fuel_nozle`
+
+local function getNearestPump()
+    local coords = GetEntityCoords(cache.ped)
+    local closestPump
+    local closestDistance
+
+    for i = 1, #config.pumpModels do
+        local pump = GetClosestObjectOfType(
+            coords.x,
+            coords.y,
+            coords.z,
+            3.0,
+            config.pumpModels[i],
+            false,
+            false,
+            false
+        )
+
+        if pump ~= 0 then
+            local distance = #(coords - GetEntityCoords(pump))
+
+            if not closestDistance or distance < closestDistance then
+                closestPump = pump
+                closestDistance = distance
+            end
+        end
+    end
+
+    return closestPump
+end
+
+local function createFuelNozzle(pump)
+    if not pump or not DoesEntityExist(pump) then return end
+
+    lib.requestModel(nozzleModel)
+
+    local nozzle = CreateObject(
+        nozzleModel,
+        0.0,
+        0.0,
+        0.0,
+        true,
+        true,
+        false
+    )
+
+    AttachEntityToEntity(
+        nozzle,
+        cache.ped,
+        GetPedBoneIndex(cache.ped, 0x49D9),
+        0.11,
+        0.02,
+        0.02,
+        -80.0,
+        -90.0,
+        15.0,
+        true,
+        true,
+        false,
+        true,
+        1,
+        true
+    )
+
+    SetModelAsNoLongerNeeded(nozzleModel)
+
+    RopeLoadTextures()
+
+    while not RopeAreTexturesLoaded() do
+        Wait(0)
+    end
+
+    local pumpCoords = GetEntityCoords(pump)
+
+    local rope = AddRope(
+        pumpCoords.x,
+        pumpCoords.y,
+        pumpCoords.z,
+        0.0,
+        0.0,
+        0.0,
+        3.0,
+        1,
+        1000.0,
+        0.0,
+        1.0,
+        false,
+        false,
+        false,
+        1.0,
+        true
+    )
+
+    ActivatePhysics(rope)
+
+    Wait(50)
+
+    local nozzleCoords = GetOffsetFromEntityInWorldCoords(
+        nozzle,
+        0.0,
+        -0.033,
+        -0.195
+    )
+
+    AttachEntitiesToRope(
+        rope,
+        pump,
+        nozzle,
+        pumpCoords.x,
+        pumpCoords.y,
+        pumpCoords.z + 1.45,
+        nozzleCoords.x,
+        nozzleCoords.y,
+        nozzleCoords.z,
+        5.0,
+        false,
+        false,
+        nil,
+        nil
+    )
+
+    return nozzle, rope
+end
+
+local function deleteFuelNozzle(nozzle, rope)
+    if nozzle and DoesEntityExist(nozzle) then
+        DeleteEntity(nozzle)
+    end
+
+    if rope then
+        DeleteRope(rope)
+    end
+
+    RopeUnloadTextures()
+end
+
 ---@param vehState StateBag
 ---@param vehicle integer
 ---@param amount number
@@ -82,6 +219,24 @@ function fuel.startFueling(vehicle, isPump)
 	TaskTurnPedToFaceEntity(cache.ped, vehicle, duration)
 	Wait(500)
 
+	local nozzle
+	local rope
+
+	if isPump then
+		local pump = getNearestPump()
+
+		if not pump then
+			state.isFueling = false
+
+			return lib.notify({
+				type = 'error',
+				description = 'Fuel pump not found.'
+			})
+		end
+
+		nozzle, rope = createFuelNozzle(pump)
+	end
+
 	CreateThread(function()
 		lib.progressCircle({
 			duration = duration,
@@ -95,13 +250,6 @@ function fuel.startFueling(vehicle, isPump)
 			anim = {
 				dict = isPump and 'timetable@gardener@filling_can' or 'weapon@w_sp_jerrycan',
 				clip = isPump and 'gar_ig_5_filling_can' or 'fire',
-			},
-			prop = isPump and {
-				model = 'prop_cs_fuel_nozle',
-				bone = 18905,
-				pos = vec3(0.1, 0.02, 0.02),
-				rot = vec3(90.0, 40.0, 170.0),
-				rotOrder = 1,
 			} or nil,
 		})
 
@@ -140,9 +288,21 @@ function fuel.startFueling(vehicle, isPump)
 	ClearPedTasks(cache.ped)
 
 	if isPump then
-		TriggerServerEvent('ox_fuel:pay', price, fuelAmount, NetworkGetNetworkIdFromEntity(vehicle))
+		deleteFuelNozzle(nozzle, rope)
+
+		TriggerServerEvent(
+			'ox_fuel:pay',
+			price,
+			fuelAmount,
+			NetworkGetNetworkIdFromEntity(vehicle)
+		)
 	else
-		TriggerServerEvent('ox_fuel:updateFuelCan', durability, NetworkGetNetworkIdFromEntity(vehicle), fuelAmount)
+		TriggerServerEvent(
+			'ox_fuel:updateFuelCan',
+			durability,
+			NetworkGetNetworkIdFromEntity(vehicle),
+			fuelAmount
+		)
 	end
 end
 
